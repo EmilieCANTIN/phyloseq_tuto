@@ -15,10 +15,6 @@ wget https://cran.r-project.org/src/contrib/Archive/structSSI/structSSI_1.1.1.ta
 ```
 
 
-
-
-
-
 #package install
 Following instruction on https://benjjneb.github.io/dada2/dada-installation.html
 
@@ -84,7 +80,13 @@ library(usethis)
 
 ```
 
+```{r}
+install.packages("rmarkdown")
+```
 
+```{r}
+install.packages("knitr")
+```
 
 
 

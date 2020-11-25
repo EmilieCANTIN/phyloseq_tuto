@@ -3,6 +3,8 @@ title: "Dada2 tutorial"
 output: html_notebook
 ---
 
+si j'écris n'importe quoi,ça va se voir su github? May be...
+
 ```{r}
 library("dada2")
 ```
