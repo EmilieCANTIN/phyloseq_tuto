@@ -1,9 +1,9 @@
 ---
 title: "Dada2 tutorial"
-output: html_notebook
+output: github_document:
+  toc: true
+  toc_deapth: 2
 ---
-
-si j'écris n'importe quoi,ça va se voir su github? May be...
 
 ```{r}
 library("dada2")
@@ -22,7 +22,7 @@ fnRs <- sort(list.files(path, pattern="_R2_001.fastq", full.names = TRUE))
 sample.names <- sapply(strsplit(basename(fnFs), "_"), `[`, 1)
 ```
 
-#Getting ready
+# Getting ready
 
 ```{r}
 library(dada2); packageVersion("dada2")
