@@ -1,0 +1,144 @@
+---
+title: "Contrôle_continu_1_analyse_des_données"
+output: github_document:
+  toc: true
+  toc_deapth: 3
+---
+
+# Méthodes
+## De lectures brutes aux tableaux
+Ce premier code permet d'importer les données d'une étude Illumina MiSeq, à partir d'un ensemble de fichiers fastq.Ici, on définit une variable chemin, afin de pouvoir accéder à ces données. 
+```{r}
+library("dada2")
+miseq_path <- "~/MiSeq_SOP" # MODIFIER le répertoire contenant les fichiers fastq après la décompression.
+list.files(miseq_path)
+```
+
+## Filtrer les données
+On filtre ensuite les séquences de faible qualité, puis on les enlève. On demande ici d'afficher les "moins bons".
+
+```{r}
+# Le tri permet de s'assurer que les lectures en avant et en arrière sont dans le même ordre
+fnFs <- sort(list.files(miseq_path, pattern="_R1_001.fastq"))
+fnRs <- sort(list.files(miseq_path, pattern="_R2_001.fastq"))
+# Extraire les noms des échantillons, en supposant que les noms de fichiers ont un format : SAMPLENAME_XXX.fastq
+sampleNames <- sapply(strsplit(fnFs, "_"), `[`, 1)
+# Préciser le chemin complet vers les fnFs et fnRs
+fnFs <- file.path(miseq_path, fnFs)
+fnRs <- file.path(miseq_path, fnRs)
+fnFs[1:3]
+```
+
+```{r}
+fnRs[1:3]
+```
+
+On sait que plus on se rapproche de la fin des séquençages, moins bonne sera leur qualité. En effet, on remarque que pour les lectures avant (deux premiers graphes), le score de qualité moyen ne descend jamais en dessous de 25. Au contraire, les graphes incarnant la fin des lectures montrent un score de qualité plus bas (~20). ce type de chiffre représente la probabilité que ce ne soit pas le bon nucléotide d'appelé. De ce fait, avec un Q20 en fin de séquences, il y a une chance sur 100 que ce soit le cas.
+```{r}
+library("dada2")
+library("ggplot2")
+plotQualityProfile(fnFs[1:2])
+```
+```{r}
+plotQualityProfile(fnRs[1:2])
+```
+On voit bien d'après ces graphiques ci-dessus que les scores de qualités baissent vers la position 240 pour les premières lectures, et plutôt vers la position 160 pour les lectures arrières. En prenant ces informations en compte, on va pouvoir dans un premier temps créer des variables pour les fichiers filtrés, puis appliquer la fonction filterAndTrim.
+
+```{r}
+filt_path <- file.path(miseq_path, "filtered") # Placez les fichiers filtrés dans le sous-répertoire filtered/
+if(!file_test("-d", filt_path)) dir.create(filt_path)
+filtFs <- file.path(filt_path, paste0(sampleNames, "_F_filt.fastq.gz"))
+filtRs <- file.path(filt_path, paste0(sampleNames, "_R_filt.fastq.gz"))
+```
+
+### Filtrez les lectures en amont et en aval
+
+```{r}
+out <- filterAndTrim(fnFs, filtFs, fnRs, filtRs, truncLen=c(240,160),
+              maxN=0, maxEE=c(2,2), truncQ=2, rm.phix=TRUE,
+              compress=TRUE, multithread=TRUE)
+head(out)
+```
+Cette fonction se base sur des fichiers contenant les lectures coupées ayant passées les filtres. 
+
+## Variantes de séquences d'inférence
+### Dereplication
+
+Ce type de fonction diminue sensiblement le temps de calcul des codes à suivre, en supprimant les comparaisons redondantes.Les résultats ressortants marquent le nombre de lectures à séquence unique, pour chaque fichier.
+```{r}
+derepFs <- derepFastq(filtFs, verbose=TRUE)
+derepRs <- derepFastq(filtRs, verbose=TRUE)
+# Nommer les objets de la classe derep par les noms des échantillons
+names(derepFs) <- sampleNames
+names(derepRs) <- sampleNames
+```
+
+Ci-dessous, la fonction learnErrors permet d'estimer les taux d'erreurs à partir d'un grand ensemble de données. Ainsi, les résultats ci-après expriment le nombre de bases qui sera finalement utilisé, par rapport au premier ensemble.
+```{r}
+errF <- learnErrors(filtFs, multithread=TRUE)
+```
+
+```{r}
+errR <- learnErrors(filtRs, multithread=TRUE)
+```
+
+```{r}
+library("dada2")
+plotErrors(errF, nominalQ=TRUE)
+```
+```{r}
+library("dada2")
+plotErrors(errR, nominalQ=TRUE)
+```
+Les figures ci-dessus représentent les estimations des taux d'erreurs. La ligne rouge incarne la tendance générale du graphique. Ensuite, les points noirs reflètent le taux d'erreurs observées, et la ligne noire le taux d'erreurs ajustées. On peut donc observer ci-dessus la fréquence du taux d'erreur en fonction du score de qualité. Aucune différence significative ne peut être relevée entre errR et errF. En effet, on observe la même tendance : moins il y a d'erreurs, plus le score de qualité augmente, ce qui est en accord avec les résultats attendus. 
+
+```{r}
+dadaFs <- dada(derepFs, err=errF, multithread=TRUE)
+```
+```{r}
+dadaRs <- dada(derepRs, err=errR, multithread=TRUE)
+```
+```{r}
+dadaFs[[1]]
+```
+Les résultats ci-dessus signifient que 128 séquences ont été spécialement extraites et définies comme des variantes réelles. Elles ont été déterminées à partir d'un ensemble de 1979 séquences uniques. 
+
+## Construire un tableau de séquences et éliminer les chimères
+
+```{r}
+mergers <- mergePairs(dadaFs, derepFs, dadaRs, derepRs)
+# Inspecter le fichier "merger data.frame" du premier échantillon
+head(mergers[[1]])
+```
+```{r}
+seqtabAll <- makeSequenceTable(mergers[!grepl("Mock", names(mergers))])
+table(nchar(getSequences(seqtabAll)))
+```
+Ici,les chimères n'ont pas encore été enlevées. Le code ci-dessous y remédie. En effet, il supprime les séquences reproduites en comparant chaque séquence aux autres.
+
+```{r}
+seqtabNoC <- removeBimeraDenovo(seqtabAll)
+dim(seqtabNoC)
+```
+On peut donc dire que les chimères représentent environ 19% des variantes de séquences. 
+
+## Attribuer une taxonomie
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
