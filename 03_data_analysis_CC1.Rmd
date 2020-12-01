@@ -1,13 +1,14 @@
 ---
-title: "Contrôle_continu_1_analyse_des_données"
-output: github_document:
+title: "Controle_continu_1_analyse_des_donnees"
+output: 
+  github_document:
   toc: true
   toc_deapth: 3
 ---
 
 # Méthodes
 ## De lectures brutes aux tableaux
-Ce premier code permet d'importer les données d'une étude Illumina MiSeq, à partir d'un ensemble de fichiers fastq.Ici, on définit une variable chemin, afin de pouvoir accéder à ces données. 
+Ce premier code permet d'importer les données d'une étude Illumina MiSeq, à partir d'un ensemble de fichiers fastq.Ici, on définit une variable chemin miseq_path, afin de pouvoir accéder à ces données. 
 ```{r}
 library("dada2")
 miseq_path <- "~/MiSeq_SOP" # MODIFIER le répertoire contenant les fichiers fastq après la décompression.
@@ -123,6 +124,320 @@ dim(seqtabNoC)
 On peut donc dire que les chimères représentent environ 19% des variantes de séquences. 
 
 ## Attribuer une taxonomie
+On va chercher ici à classer toutes les variantes des séquences étudiées. Cela est rendu possible car l'ARN 16S est un marqueur extrêmement bien classé. 
+Tout d'abord, il nous faut importer les données Silva, qui nous serviront à réaliser l'arbre taxonomique. Vous pourrez retrouver les codes nécessaires dans 01_data_import. 
+
+```{r}
+taxa <- assignTaxonomy(seqtabNoC, "~/silva_nr99_v138_train_set.fa.gz", multithread=TRUE)
+```
+
+```{r}
+taxa.print <- taxa # Suppression des noms de séquences pour l'affichage uniquement
+rownames(taxa.print) <- NULL
+head(taxa.print)
+```
+On peut ici remarquer que les plus représentés sont les bactéroides. Cela est peu surprenant car ils représentent une partie importante de la flore intestinale. 
+
+## Évaluer la précision
+La précision de dada2 est ici uniquement évaluée à partir d'une communauté fictive. 
+
+```{r}
+unqs.mock <- seqtab.nochim["Mock",]
+unqs.mock <- sort(unqs.mock[unqs.mock>0], decreasing=TRUE) # Drop ASVs absent in the Mock
+cat("DADA2 inferred", length(unqs.mock), "sample sequences present in the Mock community.\n")
+```
+
+```{r}
+mock.ref <- getSequences(file.path(path, "HMP_MOCK.v35.fasta"))
+match.ref <- sum(sapply(names(unqs.mock), function(x) any(grepl(x, mock.ref))))
+cat("Of those,", sum(match.ref), "were exact matches to the expected reference sequences.\n")
+```
+Ces deux résultats montrent bien que dada2 est extrêmement précis. En effet, sur les 20 souches bactériennes, dada2 en a aussi détecté 20: son taux d'erreur semble donc être de 0%. 
+
+# PhyloSeq
+
+Avant toute chose, il est nécessaire d'installer quelques packages pour commencer. Vous pourrez les retrouver dans 00_package_installation. Par exemple, nous aurons besoin de Decipher (ou Bioconductor) - permet de déchiffrer et gérer des données - et de Phangorn (ou Cran). 
+Ensuite, les lignes suivantes permettent de créer des varibles nécessaires à la construction d'un arbre phylogénétique. 
+
+```{r}
+samples.out <- rownames(seqtabNoC)
+subject <- sapply(strsplit(samples.out, "D"), `[`, 1)
+gender <- substr(subject,1,1)
+subject <- substr(subject,2,999)
+day <- as.integer(sapply(strsplit(samples.out, "D"), `[`, 2))
+samdf <- data.frame(Subject=subject, Gender=gender, Day=day)
+samdf$When <- "Early"
+samdf$When[samdf$Day>100] <- "Late"
+rownames(samdf) <- samples.out # 
+```
+
+## Combiner des données dans un objet phyloseq
+
+Dès lors, les données utilisées jusque là peuvent être combinées. C'est à dire que les séquences, la taxonomie, et notre arbre formeront un même objet. Ici, nous allons créer une variable ps.
+
+```{r}
+library(phangorn)
+library(DECIPHER)
+seqs <- getSequences(seqtab.nochim)
+names(seqs) <- seqs # This propagates to the tip labels of the tree
+alignment <- AlignSeqs(DNAStringSet(seqs), anchor=NA,verbose=FALSE)
+phangAlign <- phyDat(as(alignment, "matrix"), type="DNA")
+dm <- dist.ml(phangAlign)
+treeNJ <- NJ(dm) # Note, tip order != sequence order
+fit = pml(treeNJ, data=phangAlign)
+fitGTR <- update(fit, k=4, inv=0.2)
+fitGTR <- optim.pml(fitGTR, model="GTR", optInv=TRUE, optGamma=TRUE,
+        rearrangement = "stochastic", control = pml.control(trace = 0))
+detach("package:phangorn", unload=TRUE)
+```
+```{r}
+ps <- phyloseq(otu_table(seqtab.nochim, taxa_are_rows=FALSE), 
+               sample_data(samdf), 
+               tax_table(taxa),phy_tree(fitGTR$tree))
+ps <- prune_samples(sample_names(ps) != "Mock", ps) # Retirer l'échantillon fictif
+ps
+```
+
+## Chargement des données
+
+```{r}
+dna <- Biostrings::DNAStringSet(taxa_names(ps))
+names(dna) <- taxa_names(ps)
+ps <- merge_phyloseq(ps, dna)
+taxa_names(ps) <- paste0("ASV", seq(ntaxa(ps)))
+ps
+```
+## Filtrage
+
+Cette étape est notamment réalisée pour éviter de perdre du temps à analyser un grand nombre de taxons observés que certaines fois (taxons rares). 
+
+### Filtrage taxonomique
+
+```{r}
+ps_connect <-url("https://raw.githubusercontent.com/spholmes/F1000_workflow/master/data/ps.rds") 
+ps = readRDS(ps_connect)
+```
+
+```{r}
+# Afficher les rangs disponibles dans l'ensemble de données
+rank_names(ps)
+```
+
+```{r}
+# Créer un tableau, avec nombre de caractéristiques pour chaque phyla
+table(tax_table(ps)[, "Phylum"], exclude = NULL)
+```
+On peut ici voir que une seule caractéristique a été relevée pour Deinococcus, Candidatus, Fusobacteria, Tenericutes et Verrucomicrobia. Il est donc possible que chacune d'entre elles soit filtrée. Cela va être vérifié avec les codes ci-après. 
+
+```{r}
+ps <- subset_taxa(ps, !is.na(Phylum) & !Phylum %in% c("", "uncharacterized"))
+```
+
+Ici, nous nous sommes assurés que les séquences incertaines (NA) soient soustraites. Ensuite, la variable prevdf incarne la prévalence de l'ensemble de nos données. Elle permettra ensuite de calculer la prévalence totale puis moyenne de chaque phylum observé. 
+
+```{r}
+# Calculer la prévalence de chaque caractéristique, puis la stocker sous forme de data.frame
+prevdf = apply(X = otu_table(ps),
+               MARGIN = ifelse(taxa_are_rows(ps), yes = 1, no = 2),
+               FUN = function(x){sum(x > 0)})
+# Ajoutez la taxonomie et le nombre total de lectures à ces data.frame
+prevdf = data.frame(Prevalence = prevdf,
+                    TotalAbundance = taxa_sums(ps),
+                    tax_table(ps))
+```
+
+```{r}
+plyr::ddply(prevdf, "Phylum", function(df1){cbind(mean(df1$Prevalence),sum(df1$Prevalence))})
+```
+On peut donc ici observer la prévalence totale (colonne 2) et la prévalence moyenne (colonne 1). Les deux phylum que l'on va donc considérer comme rare sont Fusobacteria et Deinococcus. Ainsi, il va être nécessaire de les filtrer. 
+
+```{r}
+# Définir les phyla à filtrer
+filterPhyla = c("Fusobacteria", "Deinococcus-Thermus")
+# Filtrer les entrées avec un phylum non identifié
+ps1 = subset_taxa(ps, !Phylum %in% filterPhyla)
+ps1
+```
+Les chiffres représentés ci-dessus sont donc exempts des fusobactéries ainsi que de Deinococcus. 
+
+### Filtrage de la prévalence
+
+```{r}
+# Sous-ensemble du reste du phyla
+prevdf1 = subset(prevdf, Phylum %in% get_taxa_unique(ps1, "Phylum"))
+ggplot(prevdf1, aes(TotalAbundance, Prevalence / nsamples(ps),color=Phylum)) +
+  # Inclure une estimation pour le paramètre
+  geom_hline(yintercept = 0.05, alpha = 0.5, linetype = 2) +  geom_point(size = 2, alpha = 0.7) +
+  scale_x_log10() +  xlab("Total Abundance") + ylab("Prevalence [Frac. Samples]") +
+  facet_wrap(~Phylum) + theme(legend.position="none")
+```
+On peut ici observer la relation entre la prévalence et le nombre total de lecture pour chaque phyla. Les firmicutes sont très présents quand il y a très peu de Candidatus, Tenericutes ou encore Verrucomicrobia. Sur chacun des graphiques on peut relever une certaine tendance même si on remarque tout de même la présence de valeurs aberrantes (qu'il pourrait être judicieux d'enlever pour des futures études). Ainsi, des graphiques de ce type peuvent être particulièrement utiles pour déterminer des caractéristiques de filtrage. On peut d'aileurs également y remarquer une ligne en pointillé incarant le seuil de prévalence utilisé ici. 
+
+```{r}
+# Définir le seuil de prévalence à 5 % du total des échantillons
+prevalenceThreshold = 0.05 * nsamples(ps)
+prevalenceThreshold
+```
+
+```{r}
+# Exécuter le filtre de prévalence, en utilisant la fonction `prune_taxa()`
+keepTaxa = rownames(prevdf1)[(prevdf1$Prevalence >= prevalenceThreshold)]
+ps2 = prune_taxa(keepTaxa, ps)
+```
+
+## Agglomération taxonomique
+
+```{r}
+# Combien de genres seraient présents après filtrage ?
+length(get_taxa_unique(ps2, taxonomic.rank = "Genus"))
+```
+
+```{r}
+ps3 = tax_glom(ps2, "Genus", NArm = TRUE)
+```
+
+```{r}
+h1 = 0.4
+ps4 = tip_glom(ps2, h = h1)
+```
+Au lieu de passer par le rang taxonomique, il est préféré ici de définir une hauteur d'arbre. Elle correspondra autrement dit à la distance phylogénétique entre les différentes caractéristiques. 
+
+```{r}
+multiPlotTitleTextSize = 15
+p2tree = plot_tree(ps2, method = "treeonly",
+                   ladderize = "left",
+                   title = "Before Agglomeration") +
+  theme(plot.title = element_text(size = multiPlotTitleTextSize))
+p3tree = plot_tree(ps3, method = "treeonly",
+                   ladderize = "left", title = "By Genus") +
+  theme(plot.title = element_text(size = multiPlotTitleTextSize))
+p4tree = plot_tree(ps4, method = "treeonly",
+                   ladderize = "left", title = "By Height") +
+  theme(plot.title = element_text(size = multiPlotTitleTextSize))
+```
+Le bloc de codes ci-dessus permet de comparer trois informations différentes : données non filtrées avec arbre après agglomération taxonomique et phylogénétique. 
+
+```{r}
+# Regroupement des 'plots'
+library("gridExtra")
+grid.arrange(nrow = 1, p2tree, p3tree, p4tree)
+```
+Les arbres ci-dessus représentent donc différents types d'agglomération. Dans un premier temps, on voit l'arbre original à gauche. Ensuite, celui du milieu a été construit par agglomération par genre. Enfin, l'arbre observé à droite incarne l'agglomération phylogénétique avec la distance fixe définie ligne 300 (h1=0.4).
+
+## Transformation de la valeur de l'abondance
+
+```{r}
+plot_abundance = function(physeq,title = "",
+                          Facet = "Order", Color = "Phylum"){
+  # Sous-ensemble arbitraire, basé sur le Phylum, pour le tracé
+  p1f = subset_taxa(physeq, Phylum %in% c("Firmicutes"))
+  mphyseq = psmelt(p1f)
+  mphyseq <- subset(mphyseq, Abundance > 0)
+  ggplot(data = mphyseq, mapping = aes_string(x = "sex",y = "Abundance",
+                              color = Color, fill = Color)) +
+    geom_violin(fill = NA) +
+    geom_point(size = 1, alpha = 0.3,
+               position = position_jitter(width = 0.3)) +
+    facet_wrap(facets = Facet) + scale_y_log10()+
+    theme(legend.position="none")
+}
+```
+
+```{r}
+# Transformer en abondance relative puis enregistrer comme nouvel objet
+ps3ra = transform_sample_counts(ps3, function(x){x / sum(x)})
+```
+
+```{r}
+plotBefore = plot_abundance(ps3,"")
+plotAfter = plot_abundance(ps3ra,"")
+# Combine each plot into one graphic.
+grid.arrange(nrow = 1,  plotBefore, plotAfter)
+```
+Ces deux lots de graphiques permettent de comparer les abondances initiales (à gauche) avec les données transformées (à droite).
+On peut notamment relever la différence d'échelle entre les deux. Mise à part cette différence (tout de même importante), les allures des "nuages de points" restent sensiblement les mêmes. On peut notamment relever que la distribution de Lactobacillus paraît être bimodale. Les graphiques ci-après cherchent donc à le vérifier.
+
+## Sous-ensemble par taxonomie
+
+```{r}
+psOrd = subset_taxa(ps3ra, Order == "Lactobacillales")
+plot_abundance(psOrd, Facet = "Genus", Color = NULL)
+```
+Un sous-ensemble chez Lactobacillus a donc été crée. Ces graphiques semblent représentés un tracé plus précis que les précédents. En effet, on peut notamment y remarquer que la distribution des lactobacilles semble être ici plutôt monomodale. On peut donc logiquement supposer que les deux sous-ensembles représentés ici ont été mélangés. 
+Ensuite, pour réaliser des analyses plus poussées, nous aurons besoin d'un ensemble de packages que vous pourrez retrouver dans cran (installés dans 00_packages_installation). 
+
+### Prétraitement
+
+```{r}
+qplot(sample_data(ps)$age, geom = "histogram",binwidth=20) + xlab("age")
+```
+Ces histogrammes représentent les différents compatages en fonction de l'âge des souris. On peut notamment noter trois groupes différents qui se distinguent. Plus les souris sont jeunes, plus le nombre de comptage est élevé. Il pourrait donc être judicieux de relier l'âge des souris aux pics de comptage.
+
+```{r}
+qplot(log10(rowSums(otu_table(ps))),binwidth=0.2) +
+  xlab("Logged counts-per-sample")
+```
+Le graphique ci-dessus représente ainsi les comptages en fonction des profondeurs de lectures log transformées. On peut voir, notamment par l'allure de l'histogramme, que la transformation par logarithme n'est pas suffisante pour normaliser en vue d'analyses. En effet, normalement, la normalisation permet de rendre des ensembles comparables, or ici elle n'est pas suffisante. 
+
+```{r}
+sample_data(ps)$age_binned <- cut(sample_data(ps)$age,
+                          breaks = c(0, 100, 200, 400))
+levels(sample_data(ps)$age_binned) <- list(Young100="(0,100]", Mid100to200="(100,200]", Old200="(200,400]")
+sample_data(ps)$family_relationship=gsub(" ","",sample_data(ps)$family_relationship)
+pslog <- transform_sample_counts(ps, function(x) log(1 + x))
+out.wuf.log <- ordinate(pslog, method = "MDS", distance = "wunifrac")
+evals <- out.wuf.log$values$Eigenvalues
+plot_ordination(pslog, out.wuf.log, color = "age_binned") +
+  labs(col = "Binned Age") +
+  coord_fixed(sqrt(evals[2] / evals[1]))
+```
+Ce graphique représente une analyse par PCoA. On peut voir que les souris on été classées par catégories d'âges.
+Par ailleurs, cette analyse révèle notamment certaines erreurs parraissant aberrantes. 
+
+```{r}
+rel_abund <- t(apply(otu_table(ps), 1, function(x) x / sum(x)))
+qplot(rel_abund[, 12], geom = "histogram",binwidth=0.05) +
+  xlab("Relative abundance")
+```
+Ici, les échantillons aberrants sont dominés par une seule VSA (= variant de séquence d'amplicon). Etant un variant, on pourrait donc s'attendre à ce que son abondance soit plutôt faible. Or ici, l'abondance relative de cette catégorie est de largement plus de 90%, même si dans l'ensemble sa diversité est très faible. En effet, il s'agit bien là d'abondance relative et non absolue. 
+
+# Projections d'ordinations différentes
+
+Désormais, nous allons enlever les valeurs aberrantes afin de pouvoir mieux exploiter les données, notamment à travers des analyses par ordination. 
+
+```{r}
+outliers <- c("F5D165", "F6D165", "M3D175", "M4D175", "M5D175", "M6D175")
+ps <- prune_samples(!(sample_names(ps) %in% outliers), ps)
+```
+
+```{r}
+which(!rowSums(otu_table(ps)) > 1000)
+```
+
+Nous avons ici enlever les échantillons de moins de 1000 lectures. C'est une manière d'éliminer les rares. 
+
+```{r}
+ps <- prune_samples(rowSums(otu_table(ps)) > 1000, ps)
+pslog <- transform_sample_counts(ps, function(x) log(1 + x))
+```
+
+```{r}
+out.pcoa.log <- ordinate(pslog,  method = "MDS", distance = "bray")
+evals <- out.pcoa.log$values[,1]
+plot_ordination(pslog, out.pcoa.log, color = "age_binned",
+                  shape = "family_relationship") +
+  labs(col = "Binned Age", shape = "Litter")+
+  coord_fixed(sqrt(evals[2] / evals[1]))
+```
+Ce graphique a été réalisé par analyse PCoA en utilisant l'indice de dissimilarité de Bray-Curtis. 
+
+
+
+
+
+
+
+
 
 
 
