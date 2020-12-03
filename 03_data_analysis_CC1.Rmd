@@ -1,9 +1,10 @@
 ---
-title: "Controle_continu_1_analyse_des_donnees"
+title: "Controle_continu_1_analyse_des_donnees_Emilie_CANTIN"
 output: 
   github_document:
-  toc: true
-  toc_deapth: 3
+    toc: true
+    toc_depth: 3
+    
 ---
 
 # Méthodes
