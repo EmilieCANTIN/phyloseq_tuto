@@ -3,7 +3,6 @@ title: "R Notebook"
 output:github_document
 ---
 
-
 # Mon premier md
 Ceci est exemple de Rmd qui devient un knitt, qui sera interprété comme une page web par github. 
 
@@ -12,4 +11,24 @@ library(rmarkdown)
 library(knitr)
 plot(cars)
 ```
+
+## Évaluer la précision
+La précision de dada2 est ici uniquement évaluée à partir d'une communauté fictive. 
+
+```{r}
+unqs.mock <- seqtab.nochim["Mock",]
+unqs.mock <- sort(unqs.mock[unqs.mock>0], decreasing=TRUE) # Abandonner les ASVs absentes dans la communauté fictive
+cat("DADA2 inferred", length(unqs.mock), "sample sequences present in the Mock community.\n")
+```
+
+```{r}
+mock.ref <- getSequences(file.path(path, "HMP_MOCK.v35.fasta"))
+match.ref <- sum(sapply(names(unqs.mock), function(x) any(grepl(x, mock.ref))))
+cat("Of those,", sum(match.ref), "were exact matches to the expected reference sequences.\n")
+```
+Ces deux résultats montrent bien que dada2 est extrêmement précis. En effet, sur les 20 souches bactériennes, dada2 en a aussi détecté 20: son taux d'erreur semble donc être de 0%.
+
+
+
+
 

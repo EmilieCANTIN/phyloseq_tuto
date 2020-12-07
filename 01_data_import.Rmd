@@ -1,16 +1,32 @@
 ---
 title: "01_data-import"
-output:
-  html_document:
-    df_print: paged
+output: github_document:
+  toc: true
+  toc_deapth: 2
+    
 ---
 
+# De lectures brutes aux tableaux
 ```{bash}
 wget https://mothur.s3.us-east-2.amazonaws.com/wiki/miseqsopdata.zip
 ```
 
-
 ```{bash}
 unzip miseqsopdata.zip
 ```
+
+# Assigner une taxonomie
+```{bash}
+wget https://zenodo.org/record/3986799/files/silva_nr99_v138_train_set.fa.gz
+```
+
+```{bash}
+wget https://zenodo.org/record/3986799/files/silva_nr99_v138_wSpecies_train_set.fa.gz
+```
+
+# Import phyloseq object for the tutorial
+```{r}
+ps_connect <-url("https://raw.githubusercontent.com/spholmes/F1000_workflow/master/data/ps.rds") 
+```
+
 

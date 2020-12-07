@@ -89,6 +89,7 @@ dadaFs <- dada(filtFs, err=errF, multithread=TRUE)
 ```
 
 ```{r}
+library(dada2)
 dadaRs <- dada(filtRs, err=errR, multithread=TRUE)
 ```
 
@@ -174,6 +175,9 @@ match.ref <- sum(sapply(names(unqs.mock), function(x) any(grepl(x, mock.ref))))
 cat("Of those,", sum(match.ref), "were exact matches to the expected reference sequences.\n")
 ```
 
+```{r}
+save.image(file = "02_data_analysis_FinalEnv")
+```
 
 
 
